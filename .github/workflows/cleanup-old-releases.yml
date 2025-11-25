@@ -1,0 +1,96 @@
+name: Auto Delete Old Releases
+
+on:
+  schedule:
+    # Запускается каждый день в 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch: # Можно запустить вручную для теста
+
+jobs:
+  cleanup-releases:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Delete releases older than 2 days
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            
+            // Релизы старше 2 дней будут удалены
+            const daysToKeep = 2;
+            const now = new Date();
+            
+            console.log(`🔍 Checking releases in ${owner}/${repo}`);
+            console.log(`⏰ Current time: ${now.toISOString()}`);
+            console.log(`🗑️  Will delete releases older than ${daysToKeep} days`);
+            
+            try {
+              // Получаем все релизы
+              const releases = await github.rest.repos.listReleases({
+                owner,
+                repo,
+                per_page: 100
+              });
+              
+              console.log(`📦 Found ${releases.data.length} release(s)`);
+              
+              let deletedCount = 0;
+              
+              for (const release of releases.data) {
+                const createdAt = new Date(release.created_at);
+                const ageInDays = (now - createdAt) / (1000 * 60 * 60 * 24);
+                
+                console.log(`\n📋 Release: "${release.name || release.tag_name}"`);
+                console.log(`   Tag: ${release.tag_name}`);
+                console.log(`   Created: ${createdAt.toISOString()}`);
+                console.log(`   Age: ${ageInDays.toFixed(2)} days`);
+                
+                if (ageInDays > daysToKeep) {
+                  console.log(`   ❌ DELETING (older than ${daysToKeep} days)`);
+                  
+                  try {
+                    // Удаляем релиз
+                    await github.rest.repos.deleteRelease({
+                      owner,
+                      repo,
+                      release_id: release.id
+                    });
+                    
+                    console.log(`   ✅ Release deleted successfully`);
+                    
+                    // Удаляем также и тег
+                    try {
+                      await github.rest.git.deleteRef({
+                        owner,
+                        repo,
+                        ref: `tags/${release.tag_name}`
+                      });
+                      console.log(`   ✅ Tag deleted successfully`);
+                    } catch (tagError) {
+                      console.log(`   ⚠️  Tag not found or already deleted: ${tagError.message}`);
+                    }
+                    
+                    deletedCount++;
+                    
+                  } catch (deleteError) {
+                    console.error(`   ❌ Failed to delete release: ${deleteError.message}`);
+                  }
+                } else {
+                  console.log(`   ✅ Keeping (still fresh)`);
+                }
+              }
+              
+              console.log(`\n\n📊 Summary:`);
+              console.log(`   Total releases checked: ${releases.data.length}`);
+              console.log(`   Releases deleted: ${deletedCount}`);
+              console.log(`   Releases kept: ${releases.data.length - deletedCount}`);
+              
+            } catch (error) {
+              console.error(`❌ Error: ${error.message}`);
+              throw error;
+            }
